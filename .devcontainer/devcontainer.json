@@ -1,0 +1,62 @@
+{
+	"name": "AWS Terraform for GRR",
+	//"workspaceFolder": "/workspace",
+	"build": {
+		"dockerfile": "Dockerfile",
+		"args": { 
+			"TERRAFORM_VERSION": "latest",
+			"TFLINT_VERSION": "latest",
+			"TERRAGRUNT_VERSION": "latest",
+			"INSTALL_AZURE_CLI": "true",
+			"INSTALL_AWS_CLI": "true",
+			"INSTALL_DOCKER": "true",
+			"NODE_VERSION": "lts/*"
+		}
+	},
+	"mounts": [
+		"source=/var/run/docker.sock,target=/var/run/docker-host.sock,type=bind",
+		"source=${localEnv:HOME}/.aws,target=/home/vscode/.aws,type=bind",
+		"source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,type=bind"
+	],
+	"overrideCommand": false,
+	"runArgs": ["--init", "--env-file",".devcontainer/devcontainer.env"],
+    // "remoteEnv": {
+	// },
+
+	// Configure tool-specific properties.
+	"customizations": {
+		// Configure properties specific to VS Code.
+		"vscode": {
+				// Set *default* container specific settings.json values on container create.
+				"settings": { 
+					"terraform.languageServer": {
+						"enabled": true,
+						"args": []
+					},
+					"azureTerraform.terminal": "integrated"
+					},
+
+				// Add the IDs of extensions you want installed when the container is created.
+				"extensions": [
+					"hashicorp.terraform",
+					"ms-vscode.azurecli",
+					"ms-azuretools.vscode-azureterraform",
+					"ms-azuretools.vscode-docker",
+					"vscode-aws-console.vscode-aws-console",
+					"amazonwebservices.aws-toolkit-vscode"
+				]
+		}
+	},
+
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+
+	// Make sure the .aws directory exists so it can be mounted
+	"initializeCommand": "mkdir -p ~/.ssh && mkdir -p ~/.aws",
+
+	// Use 'postCreateCommand' to run commands after the container is created.
+	"postCreateCommand": "terraform --version && echo 'ready'",
+
+	// Comment out to connect as root instead. More info: https://aka.ms/vscode-remote/containers/non-root.
+	"remoteUser": "vscode"
+}
