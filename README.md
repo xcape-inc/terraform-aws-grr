@@ -4,6 +4,8 @@ GRR is an incident response framework that allows responders to conduct remote f
 
 This alpha Terraform module represents the automatic creation of GRR infrastructure using GCP GCE, Container-Optimized OS, and Terraform.
 
+TODO: all of this needs some updates since we do things differently
+
 This module will:
 
 * Create instance groups with global load balancers for each GRR component
@@ -69,7 +71,7 @@ To create an image suitable for deployment:
 | - | - | - | - |
 |`gce_project` | GCP project name | Yes |
 |`gce_project_id` | GCP project id | Yes |
-|`gce_region` | GCE region where `gce_project` is located | Yes |
+|`aws_region` | GCE region where `gce_project` is located | Yes |
 |`dns_zone_name` | Name of Google managed DNS zone where DNS records should be created | Yes |
 |`dns_zone_fqdn`| FQDN of `dns_zone_name` zone | Yes |
 |`dns_default_ttl` | Default TTL for DNS records in seconds | No | 300 |

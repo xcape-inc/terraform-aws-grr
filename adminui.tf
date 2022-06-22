@@ -13,6 +13,9 @@
 #  specific language governing permissions and limitations
 #  under the License.
 
+## TODO: add some infra to host a s3 bucket with the statics as a cdn
+## hooked to the alb instead of using the wsgi for it
+
 resource "random_string" "grr_adminui_password" {
   # Make the password extra hot
   length      = 32
@@ -89,7 +92,7 @@ module "grr_adminui_container" {
       },
       {
         name  = "ADMIN_PASSWORD"
-        value = "${random_string.grr_adminui_password.result}"
+        value = ${var.grr_adminui_password}
       },
       {
         name  = "FRONTEND_PUBLIC_SIGNING_KEY"
@@ -188,7 +191,7 @@ resource "google_compute_instance_group_manager" "grr_adminuis" {
   target_size = "${var.grr_adminui_target_size}"
 
   # TODO Make region automatic
-  zone = "${var.gce_region}-b"
+  zone = "${var.aws_region}-b"
 
   named_port {
     name = "service"
@@ -239,21 +242,22 @@ resource "google_compute_health_check" "grr_adminui_loadbalancing_monitoring" {
   }
 }
 
-resource "google_compute_ssl_certificate" "grr_adminui" {
-  name        = "grr-adminui-certificate-${random_string.certificate_name_suffix.result}"
-  private_key = "${var.grr_adminui_ssl_cert_private_key}"
-  certificate = "${file("${var.grr_adminui_ssl_cert_path}")}"
+# resource "google_compute_ssl_certificate" "grr_adminui" {
+#   name        = "grr-adminui-certificate-${random_string.certificate_name_suffix.result}"
+#   private_key = "${var.grr_adminui_ssl_cert_private_key}"
+#   certificate = "${file("${var.grr_adminui_ssl_cert_path}")}"
 
-  lifecycle {
-    create_before_destroy = true
-  }
-}
+#   lifecycle {
+#     create_before_destroy = true
+#   }
+# }
 
-resource "random_string" "certificate_name_suffix" {
-  length  = 4
-  special = false
-}
+# resource "random_string" "certificate_name_suffix" {
+#   length  = 4
+#   special = false
+# }
 
+# TODO: convert these to alb rules
 resource "google_compute_url_map" "grr_adminui" {
   name        = "grr-adminui"
   description = "Managed by Terraform. DO NOT EDIT. GRR AdminUI url map"
@@ -274,11 +278,13 @@ resource "google_compute_url_map" "grr_adminui" {
       service = "${google_compute_backend_service.grr_adminui.self_link}"
     }
 
+    # Note: This is hosting the internal stats server thingy; not sure we need this
     path_rule {
       paths   = ["/varz"]
       service = "${google_compute_backend_service.grr_adminui_monitoring.self_link}"
     }
 
+    # TODO: should this be /statics?
     path_rule {
       paths   = ["/${var.client_installers_bucket_root}/*"]
       service = "${google_compute_backend_bucket.client_installers.self_link}"
@@ -286,6 +292,7 @@ resource "google_compute_url_map" "grr_adminui" {
   }
 }
 
+# This is the alb
 resource "google_compute_target_https_proxy" "grr_adminui" {
   name             = "grr-adminui"
   url_map          = "${google_compute_url_map.grr_adminui.self_link}"
@@ -299,6 +306,7 @@ resource "google_compute_global_forwarding_rule" "grr_adminui" {
   ip_address = "${google_compute_global_address.grr_adminui_lb.address}"
 }
 
+# lb target group
 resource "google_compute_backend_service" "grr_adminui" {
   name          = "${var._admin_ui_backend_service_name}"
   description   = "Managed by Terraform. DO NOT EDIT. GRR adminui backend service for responding to clients"
@@ -316,6 +324,7 @@ resource "google_compute_backend_service" "grr_adminui" {
   }
 }
 
+# lb target group
 resource "google_compute_backend_service" "grr_adminui_monitoring" {
   name          = "grr-adminui-monitoring"
   description   = "Managed by Terraform. DO NOT EDIT. GRR adminui backend service for monitoring"

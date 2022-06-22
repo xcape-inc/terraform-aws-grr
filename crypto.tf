@@ -75,3 +75,41 @@ resource "tls_locally_signed_cert" "frontend" {
     "digital_signature",
   ]
 }
+
+locals {
+  fqdn = "${var.grr_frontend_sub_domain}.${data.aws_route53_zone.web_dns_domain.name}"
+}
+
+resource "aws_acm_certificate" "grr" {
+  domain_name       = locals.fqdn
+  validation_method = "DNS"
+}
+
+resource "aws_route53_record" "grr" {
+  for_each = {
+    for dvo in aws_acm_certificate.grr.domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
+  }
+
+  allow_overwrite = true
+  name            = each.value.name
+  records         = [each.value.record]
+  ttl             = 60
+  type            = each.value.type
+  zone_id         = var.web_dns_zone_id
+}
+
+resource "aws_acm_certificate_validation" "grr" {
+  certificate_arn         = aws_acm_certificate.grr.arn
+  validation_record_fqdns = [for record in aws_route53_record.grr : record.fqdn]
+}
+
+# certificate=config.CONFIG["Frontend.certificate"],
+# private_key=config.CONFIG["PrivateKeys.server_key"],
+
+# if config.CONFIG["AdminUI.enable_ssl"]:
+#   cert_file = config.CONFIG["AdminUI.ssl_cert_file"]
+#   key_file = config.CONFIG["AdminUI.ssl_key_file"]

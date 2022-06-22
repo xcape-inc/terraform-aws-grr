@@ -13,22 +13,18 @@
 #  specific language governing permissions and limitations
 #  under the License.
 
-resource "google_dns_record_set" "frontend" {
-  # If you change this, you MUST update CLIENT_PACKING_FRONTEND_HOST
-
-  name         = "frontend.${var.dns_zone_fqdn}"
-  managed_zone = "${var.dns_zone_name}"
-  type         = "A"
-  ttl          = "${var.dns_default_ttl}"
-
-  rrdatas = ["${google_compute_global_address.grr_frontend_lb.address}"]
+data "aws_route53_zone" "web_dns_domain" {
+  zone_id = var.web_dns_zone_id
 }
 
-resource "google_dns_record_set" "grr" {
-  name         = "${var.dns_zone_fqdn}"
-  managed_zone = "${var.dns_zone_name}"
-  type         = "A"
-  ttl          = "${var.dns_default_ttl}"
+resource "aws_route53_record" "cname_route53_record" {
+  zone_id = var.web_dns_zone_id
+  type    = "A"
+  name    = var.grr_frontend_sub_domain
 
-  rrdatas = ["${google_compute_global_address.grr_adminui_lb.address}"]
+  alias {
+    name                   = "${aws_lb.demo-alb.dns_name}"
+    zone_id                = "${aws_lb.demo-alb.zone_id}"
+    evaluate_target_health = false
+  }
 }

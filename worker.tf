@@ -13,145 +13,194 @@
 #  specific language governing permissions and limitations
 #  under the License.
 
-module "grr_worker_container" {
-  # Pin module for build determinism
-  source = "github.com/terraform-google-modules/terraform-google-container-vm?ref=f299e4c3b13a987482f830489222006ef85075ed"
+####
 
-  container = {
-    image = "${var.grr_worker_image}:${var.grr_worker_image_tag}"
-
-    env = [
-      {
-        name  = "MONITORING_HTTP_PORT"
-        value = "${var.grr_worker_monitoring_port}"
-      },
-      {
-        name  = "MYSQL_HOST"
-        value = "${google_sql_database_instance.grr_db.ip_address.0.ip_address}"
-      },
-      {
-        name  = "MYSQL_PORT"
-        value = 3306
-      },
-      {
-        name  = "MYSQL_DATABASE_NAME"
-        value = "${google_sql_database.grr_db.name}"
-      },
-      {
-        name  = "MYSQL_DATABASE_USERNAME"
-        value = "${google_sql_user.grr_user.name}"
-      },
-      {
-        name  = "MYSQL_DATABASE_PASSWORD"
-        value = "${random_string.grr_user_password.result}"
-      },
-      {
-        name  = "CA_CERT"
-        value = "${base64encode(tls_self_signed_cert.frontend_ca.cert_pem)}"
-      },
-      {
-        name  = "CA_PRIVATE_KEY"
-        value = "${base64encode(tls_private_key.frontend_ca.private_key_pem)}"
-      },
-    ]
-  }
-
-  restart_policy = "Always"
+locals {
+  grr_worker_service_name = "${var.grr_project}_grr-workers"
+  CERTS_PATH = "/etc/grr/certs"
 }
 
-resource "random_id" "worker_instance_config" {
-  keepers = {
-    # Automatically generate a new id if OS image or container config changes
-    container_os_image   = "${module.grr_worker_container.vm_container_label}"
-    container_definition = "${module.grr_worker_container.metadata_value}"
+resource "aws_ecs_service" "worker_container" {
+  name            = locals.grr_worker_service_name
+  cluster         = data.aws_ecs_cluster.ecs_cluster_for_services.arn
+  task_definition = aws_ecs_task_definition.workers.arn
+  desired_count   = 1
+  # launch_type     = "EC2"
+
+  # load_balancer {
+  #   target_group_arn = aws_lb_target_group.grr-adminUi.arn
+  #   container_name = jsondecode(aws_ecs_task_definition.database.container_definitions)[0].name
+  #   container_port = jsondecode(aws_ecs_task_definition.database.container_definitions)[0].portMappings[0].containerPort
+  # }
+  health_check_grace_period_seconds = 60
+
+  capacity_provider_strategy {
+    base              = 0
+    weight            = 1
+    capacity_provider = var.ecs_capacity_provider_name
   }
 
-  byte_length = 2
-}
-
-resource "google_compute_instance_template" "grr_worker" {
-  # Workers may need to be reprovisioned if frontend keys change
-  name        = "grr-worker-${random_id.client_installer_fingerprint.dec}-${random_id.worker_instance_config.hex}"
-  description = "Managed by Terraform. DO NOT EDIT. Describes how to provision an independent GRR worker."
-
-  tags = [
-    "allow-health-checks",
-  ]
-
-  labels {
-    "container-vm" = "${module.grr_worker_container.vm_container_label}"
-  }
-
-  metadata {
-    "gce-container-declaration" = "${module.grr_worker_container.metadata_value}"
-    "google-logging-enabled"    = "true"
-
-    # Case sesitive
-    "enable-oslogin" = "TRUE"
-  }
-
-  machine_type = "n1-standard-1"
-
-  disk {
-    boot         = true
-    source_image = "${module.grr_worker_container.source_image}"
-  }
-
-  network_interface {
-    subnetwork = "${google_compute_subnetwork.grr_subnet.self_link}"
-
-    # Set up NAT
-    access_config {}
-  }
-
-  lifecycle {
-    create_before_destroy = true
-  }
-
-  service_account {
-    # TODO specify a locked down service account
-    scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+  network_configuration {
+    subnets = var.service_subnet_ids
+    security_groups = [aws_security_group.workers.id]
+    assign_public_ip = false
   }
 }
 
-resource "google_compute_health_check" "grr_worker_autohealing" {
-  name = "grr-worker-autohealing"
-
-  timeout_sec        = 10
-  check_interval_sec = 10
-
-  # Workers don't expose any ports, so we assume
-  # if the monitoring stats server is up, then
-  # the worker is healthy
-  tcp_health_check {
-    port = "${var.grr_worker_monitoring_port}"
-  }
+resource "aws_security_group" "workers" {
+  description = "Security group to restrict access to containers that require access"
+  name   = locals.grr_worker_service_name
+  vpc_id = var.service_vpc_id
 }
 
-resource "google_compute_instance_group_manager" "grr_workers" {
-  name        = "grr-workers"
-  description = "Managed by Terraform. DO NOT EDIT. Group manager for GRR workers."
+resource "aws_security_group_rule" "database_ingress_workers" {
+  description = "Allow workers to access the database"
+  from_port = var.grr_db_port
+  protocol = "tcp"
+  to_port = var.grr_db_port
+  security_group_id = aws_security_group.database.id
+  source_security_group_id = aws_security_group.workers.id
+  type = "ingress"
+}
 
-  base_instance_name = "grr-worker"
+# TODO: need all the stuff for task auto scaling to meet the input variable for workers count
+resource "aws_ecs_task_definition" "workers" {
+  family = locals.grr_worker_service_name
+  cpu = 256
+  memory = 1024
+  network_mode = "awsvpc"
+  container_definitions = jsonencode([
+    {
+      name      = "workers"
+      image     = "${var.grr_worker_image}:${var.grr_worker_image_tag}"
+      cpu       = 256
+      memory    = 1024
+      essential = true
+      entryPoint = ["/bin/bash"]
+      command = [
+        "-ce", <<FOO
+(if [ ! -e /etc/grr/server.local.yaml ]; then mkdir -p ${locals.CERTS_PATH}; (echo '---
+# Worker
+PrivateKeys.ca_key: "%('"$${CA_PRIVATE_KEY_PATH}"'|file)"
+CA.certificate: "%('"$${CA_CERT_PATH}"'|file)"
 
-  instance_template = "${google_compute_instance_template.grr_worker.self_link}"
+# Database
+Database.implementation: MysqlDB
+Mysql.host: "'"$${MYSQL_HOST}"'"
+Mysql.port: "'"$${MYSQL_PORT}"'"
+Mysql.database: "'"$${MYSQL_DATABASE_NAME}"'"
+Mysql.username: "'"$${MYSQL_DATABASE_USERNAME}"'"
+Mysql.password: "'"$${MYSQL_DATABASE_PASSWORD}"'"
 
-  update_strategy = "ROLLING_UPDATE"
+# We initialize via config file and not grr_config_updater
+Server.initialized: True
 
-  rolling_update_policy {
-    type              = "PROACTIVE"
-    minimal_action    = "RESTART"
-    max_surge_percent = 100
-    min_ready_sec     = 20
-  }
+# Health Checking
+Monitoring.http_port: "'"$${MONITORING_HTTP_PORT}"'"
 
-  target_size = "${var.grr_worker_target_size}"
+# Logging
+Logging.engines: "stderr"
+Logging.verbose: True
+' > /etc/grr/server.local.yaml); fi); \
+(if [ ! -e $CA_CERT_PATH ]; then (echo "$CA_CERT" | base64 -d > $CA_CERT_PATH); fi); \
+(if [ ! -e $CA_PRIVATE_KEY_PATH ]; then (echo "$CA_PRIVATE_KEY" | base64 -d > $CA_PRIVATE_KEY_PATH); fi); \
+unset CA_CERT_PATH; unset CA_CERT; unset CA_PRIVATE_KEY_PATH; unset CA_PRIVATE_KEY; \
+unset MONITORING_HTTP_PORT; \
+unset MYSQL_HOST; unset MYSQL_PORT; unset MYSQL_DATABASE_NAME; unset MYSQL_DATABASE_USERNAME; unset MYSQL_DATABASE_PASSWORD; \
+exec $GRR_VENV/bin/grr_server \
+  --component worker \
+  --secondary_configs /etc/grr/server.local.yaml
+FOO
+      ]
+      environment = [
+        {
+          name = "CA_CERT_PATH"
+          value = "${locals.CERTS_PATH}/ca-cert.pem"
+        },
+        {
+          name = "CA_PRIVATE_KEY_PATH"
+          value = "${locals.CERTS_PATH}/ca-private.key"
+        },
+        {
+          name  = "MONITORING_HTTP_PORT"
+          value = "${var.grr_worker_monitoring_port}"
+        },
+        {
+          name  = "MYSQL_HOST"
+          value = locals.database_fqdn
+        },
+        {
+          name  = "MYSQL_PORT"
+          value = "${var.grr_db_port}"
+        },
+        {
+          name  = "MYSQL_DATABASE_NAME"
+          value = var.grr_db_name
+        },
+        {
+          name  = "MYSQL_DATABASE_USERNAME"
+          value = var.grr_db_username
+        },
+        {
+          name  = "MYSQL_DATABASE_PASSWORD"
+          value = var.grr_db_password
+        },
+        {
+          name  = "CA_CERT"
+          value = base64encode(tls_self_signed_cert.frontend_ca.cert_pem)
+        },
+        # The private key of the CA is needed by workers as they are responsible for issuing new client certs
+        {
+          name  = "CA_PRIVATE_KEY"
+          value = base64encode(tls_private_key.frontend_ca.private_key_pem)
+        },
+      ]
+      healthCheck = {
+        # TODO: update this to have the full path of the binary and maybe use curl instead?
+        Command     = ["CMD", "wget", "http://127.0.0.1/${var.grr_worker_monitoring_port}"]
+        Interval    = 10
+        Retries     = 10
+        StartPeriod = 60
+        Timeout     = 10
+      }
+      portMappings = [
+        {
+          # hostPort = 0
+          containerPort = var.grr_worker_monitoring_port
+          protocol = "tcp"
+        }
+      ]
+      # TODO: find out if there are places we would need to "mount" to make read only file system viable (like tmp)
+      # mountPoints = [
+      #   {
+      #     containerPath = "/var/lib/mysql"
+      #     sourceVolume = "efs-db-data"
+      #   }
+      # ]
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "ecs-cluster_${var.ecs_cluster_name}",
+          "awslogs-create-group": "true",
+          "awslogs-region": var.aws_region,
+          "awslogs-stream-prefix": "containers/${locals.grr_worker_service_name}"
+        }
+      }
+    }
+  ])
 
-  # TODO Make region automatic
-  zone = "${var.gce_region}-b"
+  # TODO: this needs some tuning
+  task_role_arn = aws_iam_role.ecs_task_role_for_workers.arn
+  execution_role_arn = aws_iam_role.ecs_task_role_for_workers.arn
+}
 
-  auto_healing_policies {
-    health_check      = "${google_compute_health_check.grr_worker_autohealing.self_link}"
-    initial_delay_sec = 60
-  }
+resource "aws_iam_role_policy_attachment" "ecsTaskRole_AmazonECSTaskExecutionRolePolicy_workers" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+  role       = aws_iam_role.ecs_task_role_for_workers.name
+}
+
+resource "aws_iam_role" "ecs_task_role_for_workers" {
+  name               = "ecsTaskRole_for_${locals.grr_db_service_name}"
+
+  assume_role_policy  = data.aws_iam_policy_document.ecs_task_execution_role_base.json
 }

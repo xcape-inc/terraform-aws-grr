@@ -12,10 +12,10 @@
 #  KIND, either express or implied.  See the License for the
 #  specific language governing permissions and limitations
 #  under the License.
-provider "google" {
-  project = "${var.gce_project}"
-  region  = "${var.gce_region}"
-  version = "1.20.0"
-}
+# provider "google" {
+#   project = "${var.gce_project}"
+#   region  = "${var.aws_region}"
+#   version = "1.20.0"
+# }
 
-data "google_project" "project" {}
+# data "google_project" "project" {}
