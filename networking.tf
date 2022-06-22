@@ -154,7 +154,6 @@ resource "aws_lb_listener" "grr-https" {
 }
 
 # TODO: better health checks
-# TODO: need to make this work with wsgi
 # TODO: need to add the lb rules for routing
 resource "aws_lb_target_group" "grr-adminUi" {
   depends_on = [aws_lb.demo-alb]
